@@ -9,6 +9,7 @@ from google.oauth2.service_account import Credentials
 # =========================================================
 # SISTEMA COLABORATIVO DE GERENCIAMENTO DE PROJETOS
 # Streamlit + Google Sheets
+# Versão com autenticação interna por e-mail e senha
 # =========================================================
 
 st.set_page_config(
@@ -19,7 +20,7 @@ st.set_page_config(
 )
 
 # =========================================================
-# CONFIGURAÇÕES
+# CONFIGURAÇÕES GERAIS
 # =========================================================
 
 # Nome da planilha Google exatamente como aparece no Google Drive
@@ -74,6 +75,7 @@ STATUS_PADRAO = [
 ]
 
 PRIORIDADES = ["Baixa", "Média", "Alta", "Crítica"]
+PERFIS = ["Membro", "Coordenador", "Administrador"]
 
 # =========================================================
 # ESTILO VISUAL
@@ -99,7 +101,7 @@ st.markdown(
 )
 
 # =========================================================
-# GOOGLE SHEETS
+# CONEXÃO COM GOOGLE SHEETS
 # =========================================================
 
 @st.cache_resource
@@ -139,6 +141,10 @@ def obter_aba(planilha, nome_aba, colunas):
 
 
 def ler_aba_com_cabecalho_padrao(aba, colunas):
+    """
+    Lê a aba usando o cabeçalho definido no código.
+    Isso evita erros quando o Google Sheets tem cabeçalhos vazios ou duplicados.
+    """
     valores = aba.get_all_values()
 
     if not valores:
@@ -188,7 +194,10 @@ def carregar_dados():
     for col in ["Data_inicio", "Data_termino_prevista", "Data_conclusao", "Criado_em", "Atualizado_em"]:
         acoes[col] = pd.to_datetime(acoes[col], errors="coerce")
 
-    acoes["Percentual_conclusao"] = pd.to_numeric(acoes["Percentual_conclusao"], errors="coerce").fillna(0)
+    acoes["Percentual_conclusao"] = pd.to_numeric(
+        acoes["Percentual_conclusao"],
+        errors="coerce"
+    ).fillna(0)
 
     status = STATUS_PADRAO
     if not config.empty and {"Tipo", "Valor"}.issubset(config.columns):
@@ -291,8 +300,8 @@ def preparar_acoes(df_acoes):
     df = df_acoes.copy()
 
     if df.empty:
-        df["Status_automatico"] = []
-        df["Dias_atraso"] = []
+        df["Status_automatico"] = pd.Series(dtype="object")
+        df["Dias_atraso"] = pd.Series(dtype="int")
         return df
 
     df["Status_automatico"] = df.apply(calcular_status_automatico, axis=1)
@@ -317,22 +326,51 @@ def gerar_id_acao(df_acoes):
     return f"ACAO-{proximo:04d}"
 
 # =========================================================
-# CARREGAMENTO
+# CARREGAMENTO DOS DADOS
 # =========================================================
 
 df_projetos, df_usuarios, df_acoes_raw, STATUS_DISPONIVEIS = carregar_dados()
 df_acoes = preparar_acoes(df_acoes_raw)
 
 # =========================================================
-# LOGIN SIMPLES
+# LOGIN INTERNO POR E-MAIL E SENHA
 # =========================================================
+
+st.sidebar.title("📊 Projetos")
+
+email_usuario = st.sidebar.text_input(
+    "Seu e-mail",
+    placeholder="nome@email.com"
+).strip().lower()
+
+senha_usuario = st.sidebar.text_input(
+    "Senha",
+    type="password"
+)
 
 if not email_usuario or not senha_usuario:
     st.title("Gerenciamento de Projetos")
     st.info("Informe seu e-mail e senha na barra lateral para acessar o sistema.")
     st.stop()
 
-df_usuarios["Email_normalizado"] = df_usuarios["Email"].apply(normalizar_email)
+if df_usuarios.empty:
+    st.title("Gerenciamento de Projetos")
+    st.error("Nenhum usuário cadastrado.")
+    st.info("Cadastre pelo menos um usuário administrador na aba usuarios da planilha Google.")
+    st.stop()
+
+if "Senha" not in df_usuarios.columns:
+    st.title("Gerenciamento de Projetos")
+    st.error("A coluna 'Senha' não foi encontrada na aba usuarios.")
+    st.info("A primeira linha da aba usuarios deve ser: Nome | Email | Senha | Perfil | Ativo")
+    st.stop()
+
+df_usuarios["Email_normalizado"] = (
+    df_usuarios["Email"]
+    .astype(str)
+    .str.strip()
+    .str.lower()
+)
 
 usuario_logado = df_usuarios[
     (df_usuarios["Email_normalizado"] == email_usuario)
@@ -350,8 +388,13 @@ if not usuario_ativo(usuario_logado.iloc[0]["Ativo"]):
     st.error("Usuário inativo.")
     st.stop()
 
-perfil_usuario = usuario_logado.iloc[0]["Perfil"]
+nome_usuario = str(usuario_logado.iloc[0]["Nome"]).strip()
+perfil_usuario = str(usuario_logado.iloc[0]["Perfil"]).strip()
 acesso_admin = perfil_usuario == "Administrador"
+acesso_coordenador = perfil_usuario == "Coordenador"
+
+st.sidebar.success(f"Logado como: {nome_usuario}")
+st.sidebar.caption(f"Perfil: {perfil_usuario}")
 
 # =========================================================
 # FILTROS E MENU
@@ -367,6 +410,13 @@ if acesso_admin:
         "Cadastro de usuários",
         "Exportar dados"
     ]
+elif acesso_coordenador:
+    paginas = [
+        "Painel geral",
+        "Nova ação",
+        "Minhas ações",
+        "Todas as ações"
+    ]
 else:
     paginas = [
         "Meu painel",
@@ -379,9 +429,13 @@ pagina = st.sidebar.radio("Menu", paginas)
 st.sidebar.divider()
 st.sidebar.caption("Filtros")
 
-projetos_ativos = df_projetos[df_projetos["Ativo"].apply(usuario_ativo)].copy() if not df_projetos.empty else df_projetos
-lista_projetos = sorted(projetos_ativos["Projeto"].dropna().unique()) if not projetos_ativos.empty else []
+projetos_ativos = (
+    df_projetos[df_projetos["Ativo"].apply(usuario_ativo)].copy()
+    if not df_projetos.empty
+    else pd.DataFrame(columns=COLUNAS_PROJETOS)
+)
 
+lista_projetos = sorted(projetos_ativos["Projeto"].dropna().unique()) if not projetos_ativos.empty else []
 filtro_projeto = st.sidebar.multiselect("Projeto", lista_projetos, default=lista_projetos)
 
 if not df_acoes.empty:
@@ -389,13 +443,13 @@ if not df_acoes.empty:
 else:
     df_acoes_filtrado = df_acoes.copy()
 
-if not acesso_admin:
+if not acesso_admin and not acesso_coordenador:
     df_acoes_filtrado = df_acoes_filtrado[
         df_acoes_filtrado["Responsável_email"].apply(normalizar_email) == email_usuario
     ].copy()
 
 # =========================================================
-# PAINEL GERAL
+# PAINEL GERAL / MEU PAINEL
 # =========================================================
 
 if pagina in ["Painel geral", "Meu painel"]:
@@ -415,7 +469,7 @@ if pagina in ["Painel geral", "Meu painel"]:
 
     st.divider()
 
-    col_a, col_b = st.columns([2.1, 1])
+    col_a, col_b = st.columns([2.2, 0.9])
 
     with col_a:
         st.subheader("Mapa das ações")
@@ -465,8 +519,11 @@ if pagina in ["Painel geral", "Meu painel"]:
 
         with col_g1:
             df_evolucao = df_acoes_filtrado.copy()
-            df_evolucao["Mês"] = pd.to_datetime(df_evolucao["Data_termino_prevista"], errors="coerce").dt.to_period("M").astype(str)
-            df_evolucao = df_evolucao.dropna(subset=["Mês"])
+            df_evolucao["Mês"] = pd.to_datetime(
+                df_evolucao["Data_termino_prevista"],
+                errors="coerce"
+            ).dt.to_period("M").astype(str)
+            df_evolucao = df_evolucao[df_evolucao["Mês"] != "NaT"]
 
             if not df_evolucao.empty:
                 evolucao = (
@@ -478,6 +535,7 @@ if pagina in ["Painel geral", "Meu painel"]:
                     )
                     .reset_index()
                 )
+
                 fig_evo = go.Figure()
                 fig_evo.add_trace(go.Scatter(x=evolucao["Mês"], y=evolucao["Acoes"], mode="lines+markers", name="Ações previstas"))
                 fig_evo.add_trace(go.Scatter(x=evolucao["Mês"], y=evolucao["Concluidas"], mode="lines+markers", name="Concluídas"))
@@ -493,7 +551,7 @@ if pagina in ["Painel geral", "Meu painel"]:
             if not df_gantt.empty:
                 df_gantt["Data_inicio"] = pd.to_datetime(df_gantt["Data_inicio"])
                 df_gantt["Data_termino_prevista"] = pd.to_datetime(df_gantt["Data_termino_prevista"])
-                df_gantt["Rotulo"] = df_gantt["Projeto"] + " | " + df_gantt["Ação"].astype(str).str[:35]
+                df_gantt["Rotulo"] = df_gantt["Projeto"].astype(str) + " | " + df_gantt["Ação"].astype(str).str[:35]
 
                 fig_gantt = px.timeline(
                     df_gantt,
@@ -549,18 +607,15 @@ elif pagina == "Nova ação":
     st.title("Nova ação")
     st.caption("Cadastre uma ação, responsável, datas, prioridade e percentual de conclusão.")
 
-    if not acesso_admin:
-        usuario_nome = usuario_logado.iloc[0]["Nome"]
-        usuario_email = usuario_logado.iloc[0]["Email"]
-    else:
-        usuario_nome = ""
-        usuario_email = email_usuario
-
     if projetos_ativos.empty:
         st.warning("Cadastre pelo menos um projeto ativo antes de registrar ações.")
         st.stop()
 
-    usuarios_ativos = df_usuarios[df_usuarios["Ativo"].apply(usuario_ativo)].copy() if not df_usuarios.empty else pd.DataFrame(columns=COLUNAS_USUARIOS)
+    usuarios_ativos = (
+        df_usuarios[df_usuarios["Ativo"].apply(usuario_ativo)].copy()
+        if not df_usuarios.empty
+        else pd.DataFrame(columns=COLUNAS_USUARIOS)
+    )
     usuarios_ativos["Usuario_label"] = usuarios_ativos["Nome"].astype(str) + " — " + usuarios_ativos["Email"].astype(str)
 
     with st.form("form_nova_acao", clear_on_submit=True):
@@ -570,14 +625,14 @@ elif pagina == "Nova ação":
             projeto = st.selectbox("Projeto", projetos_ativos["Projeto"].dropna().unique())
             acao = st.text_area("Ação", height=100, placeholder="Descreva objetivamente a ação a ser realizada.")
 
-            if acesso_admin and not usuarios_ativos.empty:
+            if (acesso_admin or acesso_coordenador) and not usuarios_ativos.empty:
                 resp_label = st.selectbox("Responsável", usuarios_ativos["Usuario_label"].tolist())
                 resp_linha = usuarios_ativos[usuarios_ativos["Usuario_label"] == resp_label].iloc[0]
                 responsavel = resp_linha["Nome"]
                 responsavel_email = resp_linha["Email"]
             else:
-                responsavel = usuario_nome
-                responsavel_email = usuario_email
+                responsavel = nome_usuario
+                responsavel_email = email_usuario
                 st.text_input("Responsável", value=responsavel, disabled=True)
 
             prioridade = st.selectbox("Prioridade", PRIORIDADES, index=1)
@@ -590,7 +645,6 @@ elif pagina == "Nova ação":
             percentual = st.slider("Percentual de conclusão", min_value=0, max_value=100, value=0, step=5)
 
         observacoes = st.text_area("Observações", height=120)
-
         enviar = st.form_submit_button("Salvar ação", type="primary")
 
     if enviar:
@@ -619,7 +673,7 @@ elif pagina == "Nova ação":
             st.success("Ação salva com sucesso.")
 
 # =========================================================
-# MINHAS/TODAS AS AÇÕES
+# MINHAS AÇÕES / TODAS AS AÇÕES
 # =========================================================
 
 elif pagina in ["Minhas ações", "Todas as ações"]:
@@ -627,7 +681,7 @@ elif pagina in ["Minhas ações", "Todas as ações"]:
 
     df_lista = df_acoes.copy()
 
-    if pagina == "Minhas ações" or not acesso_admin:
+    if pagina == "Minhas ações" or (not acesso_admin and not acesso_coordenador):
         df_lista = df_lista[df_lista["Responsável_email"].apply(normalizar_email) == email_usuario].copy()
 
     if filtro_projeto:
@@ -636,10 +690,11 @@ elif pagina in ["Minhas ações", "Todas as ações"]:
     if df_lista.empty:
         st.info("Nenhuma ação encontrada.")
     else:
+        status_disponiveis_lista = sorted(df_lista["Status_automatico"].dropna().unique())
         status_filtro = st.multiselect(
             "Filtrar por status automático",
-            sorted(df_lista["Status_automatico"].dropna().unique()),
-            default=sorted(df_lista["Status_automatico"].dropna().unique())
+            status_disponiveis_lista,
+            default=status_disponiveis_lista
         )
 
         df_lista = df_lista[df_lista["Status_automatico"].isin(status_filtro)].copy()
@@ -671,7 +726,11 @@ elif pagina in ["Minhas ações", "Todas as ações"]:
         id_acao = st.selectbox("Selecione o ID da ação", df_lista["ID"].tolist())
         linha = df_lista[df_lista["ID"] == id_acao].iloc[0]
 
-        pode_editar = acesso_admin or normalizar_email(linha["Responsável_email"]) == email_usuario
+        pode_editar = (
+            acesso_admin
+            or acesso_coordenador
+            or normalizar_email(linha["Responsável_email"]) == email_usuario
+        )
 
         if not pode_editar:
             st.warning("Você não tem permissão para editar esta ação.")
@@ -709,7 +768,6 @@ elif pagina in ["Minhas ações", "Todas as ações"]:
                     )
 
                 novas_obs = st.text_area("Observações", value=str(linha["Observações"]), height=120)
-
                 salvar_edicao = st.form_submit_button("Salvar atualização", type="primary")
 
             if salvar_edicao:
@@ -800,7 +858,7 @@ elif pagina == "Cadastro de usuários":
             senha = st.text_input("Senha", type="password")
 
         with col2:
-            perfil = st.selectbox("Perfil", ["Membro", "Coordenador", "Administrador"])
+            perfil = st.selectbox("Perfil", PERFIS)
 
         with col3:
             ativo = st.selectbox("Ativo", ["Sim", "Não"])
@@ -812,12 +870,14 @@ elif pagina == "Cadastro de usuários":
             st.warning("Informe o nome.")
         elif not email.strip():
             st.warning("Informe o e-mail.")
+        elif not senha.strip():
+            st.warning("Informe uma senha.")
         else:
             novo = pd.DataFrame([
                 {
                     "Nome": nome.strip(),
                     "Email": normalizar_email(email),
-                    "Senha": senha,
+                    "Senha": senha.strip(),
                     "Perfil": perfil,
                     "Ativo": ativo
                 }
@@ -839,14 +899,14 @@ elif pagina == "Cadastro de usuários":
         st.success("Usuários atualizados.")
 
 # =========================================================
-# EXPORTAR
+# EXPORTAR DADOS
 # =========================================================
 
 elif pagina == "Exportar dados":
     st.title("Exportar dados")
 
     projetos_export = df_projetos.to_csv(index=False).encode("utf-8-sig")
-    usuarios_export = df_usuarios.to_csv(index=False).encode("utf-8-sig")
+    usuarios_export = df_usuarios[COLUNAS_USUARIOS].to_csv(index=False).encode("utf-8-sig")
     acoes_export = df_acoes.to_csv(index=False).encode("utf-8-sig")
 
     col1, col2, col3 = st.columns(3)
