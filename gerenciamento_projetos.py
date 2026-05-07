@@ -327,54 +327,31 @@ df_acoes = preparar_acoes(df_acoes_raw)
 # LOGIN SIMPLES
 # =========================================================
 
-st.sidebar.title("📊 Projetos")
-
-modo_acesso = st.sidebar.radio(
-    "Tipo de acesso",
-    ["Usuário", "Administrador"],
-    help="Usuários registram e acompanham suas ações. O administrador visualiza e edita tudo."
-)
-
-email_usuario = st.sidebar.text_input("Seu e-mail", placeholder="nome@email.com").strip().lower()
-
-senha_admin = ""
-if modo_acesso == "Administrador":
-    senha_admin = st.sidebar.text_input("Senha do administrador", type="password")
-
-SENHA_ADMIN = st.secrets.get("SENHA_ADMIN", "admin123")
-
-if not email_usuario:
+if not email_usuario or not senha_usuario:
     st.title("Gerenciamento de Projetos")
-    st.info("Informe seu e-mail na barra lateral para acessar o sistema.")
+    st.info("Informe seu e-mail e senha na barra lateral para acessar o sistema.")
     st.stop()
 
-if modo_acesso == "Administrador":
-    if senha_admin != SENHA_ADMIN:
-        st.title("Gerenciamento de Projetos")
-        st.warning("Informe a senha do administrador para acessar o painel completo.")
-        st.stop()
-    acesso_admin = True
-else:
-    acesso_admin = False
+df_usuarios["Email_normalizado"] = df_usuarios["Email"].apply(normalizar_email)
 
-if not df_usuarios.empty:
-    df_usuarios["Email_normalizado"] = df_usuarios["Email"].apply(normalizar_email)
-else:
-    df_usuarios["Email_normalizado"] = []
+usuario_logado = df_usuarios[
+    (df_usuarios["Email_normalizado"] == email_usuario)
+    &
+    (df_usuarios["Senha"].astype(str).str.strip() == senha_usuario)
+]
 
-usuario_logado = df_usuarios[df_usuarios["Email_normalizado"] == email_usuario]
+if usuario_logado.empty:
+    st.title("Gerenciamento de Projetos")
+    st.error("E-mail ou senha inválidos.")
+    st.stop()
 
-if not acesso_admin:
-    if usuario_logado.empty:
-        st.title("Gerenciamento de Projetos")
-        st.error("E-mail não encontrado no cadastro de usuários.")
-        st.info("Peça ao administrador para cadastrar seu e-mail na aba usuarios da planilha Google.")
-        st.stop()
+if not usuario_ativo(usuario_logado.iloc[0]["Ativo"]):
+    st.title("Gerenciamento de Projetos")
+    st.error("Usuário inativo.")
+    st.stop()
 
-    if not usuario_ativo(usuario_logado.iloc[0]["Ativo"]):
-        st.title("Gerenciamento de Projetos")
-        st.error("Usuário inativo.")
-        st.stop()
+perfil_usuario = usuario_logado.iloc[0]["Perfil"]
+acesso_admin = perfil_usuario == "Administrador"
 
 # =========================================================
 # FILTROS E MENU
