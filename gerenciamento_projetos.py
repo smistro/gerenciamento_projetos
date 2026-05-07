@@ -42,6 +42,7 @@ COLUNAS_PROJETOS = [
 COLUNAS_USUARIOS = [
     "Nome",
     "Email",
+    "Senha",
     "Perfil",
     "Ativo"
 ]
@@ -819,6 +820,7 @@ elif pagina == "Cadastro de usuários":
         with col1:
             nome = st.text_input("Nome")
             email = st.text_input("E-mail")
+            senha = st.text_input("Senha", type="password")
 
         with col2:
             perfil = st.selectbox("Perfil", ["Membro", "Coordenador", "Administrador"])
@@ -838,6 +840,7 @@ elif pagina == "Cadastro de usuários":
                 {
                     "Nome": nome.strip(),
                     "Email": normalizar_email(email),
+                    "Senha": senha,
                     "Perfil": perfil,
                     "Ativo": ativo
                 }
